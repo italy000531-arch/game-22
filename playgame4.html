@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <!-- 禁止縮放，強制全螢幕 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Whisper Dungeon Mobile</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #050505;
+            color: #e0e0e0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none; /* 禁止手機預設手勢 */
+        }
+
+        #game-container {
+            position: relative;
+            /* 保持 9:16 比例 */
+            aspect-ratio: 9 / 16;
+            height: 100%;
+            width: auto;
+            max-width: 100%;
+            max-height: 100%;
+            background: #000;
+            box-shadow: 0 0 20px rgba(138, 43, 226, 0.3);
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            /* 確保 Canvas 填滿容器 */
+            object-fit: fill; 
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 5%; /* 稍微往下留一點空間 */
+            left: 5%;
+            width: 90%;
+            pointer-events: none;
+            z-index: 5;
+            display: flex;
+            justify-content: space-between;
+            font-size: 18px;
+        }
+
+        .hud-text {
+            background: rgba(0, 0, 0, 0.6);
+            padding: 5px 10px;
+            border-radius: 4px;
+            border: 1px solid #333;
+            color: #aaa;
+        }
+
+        .hud-target {
+            color: #d8bfd8;
+            border-color: #d8bfd8;
+            font-weight: bold;
+        }
+
+        #level-indicator {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 48px;
+            color: #fff;
+            text-shadow: 0 0 20px #8a2be2;
+            opacity: 0;
+            transition: opacity 0.5s;
+            pointer-events: none;
+            z-index: 6;
+            text-align: center;
+            width: 100%;
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(5, 5, 5, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            padding: 20px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+
+        h1 { color: #8a2be2; margin-bottom: 10px; text-shadow: 0 0 10px #8a2be2; }
+        p { color: #888; font-size: 14px; margin-bottom: 20px; }
+
+        input[type="text"] {
+            padding: 10px;
+            background: #111;
+            border: 1px solid #555;
+            color: #fff;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            text-align: center;
+            width: 200px;
+        }
+
+        button {
+            padding: 12px 40px;
+            background: #220022;
+            border: 1px solid #8a2be2;
+            color: #fff;
+            font-size: 18px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:active { background: #8a2be2; }
+
+        #leaderboard-box {
+            margin-top: 15px;
+            width: 80%;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #333;
+            padding: 5px;
+            display: none;
+            text-align: left;
+        }
+        .lb-row { display: flex; justify-content: space-between; font-size: 12px; border-bottom: 1px solid #222; padding: 2px; color: #666; }
+        .lb-row.active { color: #d8bfd8; }
+
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <!-- Canvas 內部解析度設定為適合 9:16 的像素 -->
+    <canvas id="gameCanvas" width="600" height="1067"></canvas>
+    
+    <div id="ui-layer">
+        <div class="hud-text">LVL <span id="level">1</span></div>
+        <div class="hud-text hud-target">剩餘: <span id="target-count">15</span></div>
+        <div class="hud-text">TIME <span id="timer">30</span></div>
+    </div>
+
+    <div id="level-indicator"></div>
+
+    <div id="overlay">
+        <h1>WHISPER DUNGEON</h1>
+        <p>點擊怪物<br>消除倒數以通關</p>
+        <input type="text" id="playerNameInput" placeholder="你的名字" maxlength="8">
+        
+        <div id="leaderboard-box">
+            <div style="text-align:center; color:#8a2be2; margin-bottom:5px;">🏆 排行榜</div>
+            <div id="leaderboard-content"></div>
+        </div>
+
+        <button id="btn-start" onclick="startGame()">開始儀式</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const levelEl = document.getElementById('level');
+const targetCountEl = document.getElementById('target-count');
+const timerEl = document.getElementById('timer');
+const overlay = document.getElementById('overlay');
+const levelIndicator = document.getElementById('level-indicator');
+const nameInput = document.getElementById('playerNameInput');
+const leaderboardBox = document.getElementById('leaderboard-box');
+const leaderboardContent = document.getElementById('leaderboard-content');
+
+// 遊戲狀態
+let gameRunning = false;
+let currentLevel = 1;
+let totalScore = 0;
+let enemiesRemaining = 15;
+let initialTarget = 15;
+let timeLeft = 30;
+let lastTime = Date.now();
+let enemies = [];
+let particles = [];
+let currentName = "";
+
+// 音頻系統
+let audioCtx = null;
+
+function initAudio() {
+    if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new AudioContext();
+    }
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+}
+
+// 鬼異打擊音效
+function playEerieHitSound() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+
+    // 主音：快速下降的正弦波
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800, now);
+    osc.frequency.exponentialRampToValueAtTime(100, now + 0.2);
+    gain.gain.setValueAtTime(0.3, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(now); osc.stop(now + 0.2);
+
+    // 殘音：低沉的嗡鳴
+    const osc2 = audioCtx.createOscillator();
+    const gain2 = audioCtx.createGain();
+    osc2.type = 'triangle';
+    osc2.frequency.setValueAtTime(100, now);
+    osc2.frequency.linearRampToValueAtTime(80, now + 0.3);
+    gain2.gain.setValueAtTime(0.15, now);
+    gain2.gain.linearRampToValueAtTime(0, now + 0.3);
+    osc2.connect(gain2); gain2.connect(audioCtx.destination);
+    osc2.start(now); osc2.stop(now + 0.3);
+}
+
+// 艾莉絲繪製 (稍微放大一點適應長螢幕)
+function drawAlice(level) {
+    // 將艾莉絲放在螢幕垂直中心偏上
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2 - 100;
+    
+    const skinColor = '#ffe0bd';
+    const dressColor = '#2c3e50';
+
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    
+    // 頭髮
+    ctx.fillStyle = '#5c3a21';
+    ctx.beginPath(); ctx.ellipse(0, -60, 60, 80, 0, 0, Math.PI * 2); ctx.fill();
+    
+    // 臉
+    ctx.fillStyle = skinColor;
+    ctx.beginPath(); ctx.ellipse(0, -20, 40, 50, 0, 0, Math.PI * 2); ctx.fill();
+    
+    // 眼睛 (空洞感)
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.arc(-15, -20, 5, 0, Math.PI*2); ctx.arc(15, -20, 5, 0, Math.PI*2); ctx.fill();
+    
+    // 身體
+    ctx.fillStyle = skinColor;
+    ctx.fillRect(-30, 80, 60, 150); // 軀幹
+
+    // 手臂
+    ctx.strokeStyle = skinColor; ctx.lineWidth = 16; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(-40, 90); ctx.lineTo(-80, 200); ctx.stroke(); // 左
+    ctx.beginPath(); ctx.moveTo(40, 90); ctx.lineTo(80, 200); ctx.stroke();   // 右
+
+    // 腿部
+    ctx.beginPath(); ctx.moveTo(-25, 230); ctx.lineTo(-35, 400); ctx.stroke(); // 左
+    ctx.beginPath(); ctx.moveTo(25, 230); ctx.lineTo(35, 400); ctx.stroke();   // 右
+
+    // 衣服邏輯 (根據等級)
+    if (level === 1) {
+        // 滿身衣物
+        ctx.fillStyle = dressColor; 
+        ctx.beginPath(); ctx.moveTo(-50, 80); ctx.lineTo(50, 80); ctx.lineTo(80, 350); ctx.lineTo(-80, 350); ctx.fill();
+        ctx.fillStyle = '#fff'; // 頭巾
+        ctx.beginPath(); ctx.ellipse(0, -60, 70, 30, 0, 0, Math.PI*2); ctx.fill();
+    } else if (level === 2) {
+        // 脫外套
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(-20, 150, 20, 0, Math.PI*2); ctx.arc(20, 150, 20, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = dressColor; ctx.fillRect(-40, 200, 80, 150);
+    } else if (level === 3) {
+        // 脫裙子
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(-20, 150, 20, 0, Math.PI*2); ctx.arc(20, 150, 20, 0, Math.PI*2); ctx.fill();
+        // 內褲
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.moveTo(-30, 230); ctx.lineTo(30, 230); ctx.lineTo(20, 260); ctx.lineTo(-20, 260); ctx.fill();
+    } else if (level >= 4) {
+        // 幾乎全裸
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(-20, 150, 20, 0, Math.PI*2); ctx.arc(20, 150, 20, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#000'; ctx.beginPath(); ctx.moveTo(-30, 230); ctx.lineTo(30, 230); ctx.lineTo(20, 260); ctx.lineTo(-20, 260); ctx.fill();
+    }
+
+    ctx.restore();
+}
+
+function drawEnemy(enemy) {
+    ctx.save();
+    ctx.translate(enemy.x, enemy.y);
+    ctx.fillStyle = '#550000';
+    ctx.beginPath(); ctx.arc(0, 0, enemy.radius, 0, Math.PI*2); ctx.fill();
+    // 發光眼
+    ctx.fillStyle = '#ffaaaa'; ctx.beginPath(); ctx.arc(-8, -8, 5, 0, Math.PI*2); ctx.arc(8, -8, 5, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+}
+
+function drawParticles() {
+    particles.forEach((p, i) => {
+        p.x += p.vx; p.y += p.vy; p.life--;
+        ctx.fillStyle = `rgba(138, 43, 226, ${p.life/20})`;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+        if (p.life <= 0) particles.splice(i, 1);
+    });
+}
+
+function createParticles(x, y) {
+    for(let i=0; i<15; i++) {
+        particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 20, vy: (Math.random() - 0.5) * 20, life: 30, size: Math.random() * 6 + 2 });
+    }
+}
+
+function spawnEnemy() {
+    const size = 50; // 怪物變大一點好點
+    const radius = size / 2;
+    // 確保在 Canvas 邊界內
+    const x = Math.random() * (canvas.width - size * 2) + size;
+    const y = Math.random() * (canvas.height - size * 2) + size;
+    const speed = 1 + currentLevel * 0.5;
+    const angle = Math.random() * Math.PI * 2;
+    
+    enemies.push({ 
+        x: x, 
+        y: y, 
+        radius: radius, 
+        vx: Math.cos(angle) * speed, 
+        vy: Math.sin(angle) * speed 
+    });
+}
+
+function updateGame() {
+    if (!gameRunning) return;
+    
+    const now = Date.now();
+    if (now - lastTime > 1000) {
+        timeLeft--;
+        timerEl.innerText = timeLeft;
+        lastTime = now;
+        if (timeLeft <= 0) gameOver();
+    }
+    
+    // 保持怪物數量
+    if (enemies.length < 4 + currentLevel && Math.random() < 0.05) spawnEnemy();
+    
+    // 更新怪物位置與反彈
+    enemies.forEach((enemy) => {
+        enemy.x += enemy.vx; 
+        enemy.y += enemy.vy;
+        
+        // 碰壁反彈
+        if (enemy.x - enemy.radius < 0 || enemy.x + enemy.radius > canvas.width) enemy.vx *= -1;
+        if (enemy.y - enemy.radius < 0 || enemy.y + enemy.radius > canvas.height) enemy.vy *= -1;
+    });
+    
+    if (enemiesRemaining <= 0) nextLevel();
+}
+
+function draw() {
+    // 清除畫面
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // 背景漸層
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#1a051a');
+    gradient.addColorStop(1, '#000000');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    drawAlice(alice.level);
+    enemies.forEach(enemy => drawEnemy(enemy));
+    drawParticles();
+    updateGame();
+    
+    if (gameRunning) {
+        requestAnimationFrame(draw);
+    }
+}
+
+// --- 點擊判定核心邏輯 (已優化) ---
+
+// 確保 Canvas 尺寸與 CSS 顯示比例一致
+function resizeCanvas() {
+    const container = document.getElementById('game-container');
+    const rect = container.getBoundingClientRect();
+    // Canvas 內部解析度固定 600x1067，CSS 負責縮放
+    // 這裡不需要改 canvas.width，只需要確保計算座標時用正確的比例
+}
+
+window.addEventListener('resize', resizeCanvas);
+
+// 統一的輸入處理
+function handleInput(inputX, inputY) {
+    if (!gameRunning) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    
+    // 1. 計算 Canvas 實際顯示大小與內部像素的比例
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    // 2. 將屏幕點擊座標轉換為 Canvas 內部座標
+    const mouseX = (inputX - rect.left) * scaleX;
+    const mouseY = (inputY - rect.top) * scaleY;
+
+    // 3. 檢測碰撞
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        let enemy = enemies[i];
+        
+        // 距離公式
+        const dx = mouseX - enemy.x;
+        const dy = mouseY - enemy.y;
+        const distance = Math.sqrt(dx*dx + dy*dy);
+        
+        // 【關鍵修改】：判定半徑設為怪物半徑的 3.5 倍，極大提升手感
+        if (distance < enemy.radius * 3.5) {
+            hitEnemy(enemy, i);
+            break; // 一次只打一隻
+        }
+    }
+}
+
+canvas.addEventListener('mousedown', (e) => handleInput(e.clientX, e.clientY));
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault(); // 防止觸控時觸發滑動或縮放
+    if(e.touches.length > 0) {
+        handleInput(e.touches[0].clientX, e.touches[0].clientY);
+    }
+}, {passive: false});
+
+function hitEnemy(enemy, index) {
+    playEerieHitSound();
+    createParticles(enemy.x, enemy.y);
+    enemies.splice(index, 1);
+    totalScore++;
+    
+    enemiesRemaining--;
+    targetCountEl.innerText = Math.max(0, enemiesRemaining);
+    
+    // 簡單震動反饋
+    if (navigator.vibrate) navigator.vibrate(50);
+}
+
+function nextLevel() {
+    if (currentLevel >= 5) { gameWin(); return; }
+    gameRunning = false;
+    
+    levelEl.innerText = currentLevel + 1;
+    levelIndicator.style.opacity = 1;
+    levelIndicator.innerText = "LEVEL " + (currentLevel + 1);
+    alice.level++;
+    
+    setTimeout(() => {
+        levelIndicator.style.opacity = 0;
+        currentLevel++;
+        initialTarget = 15 + currentLevel * 5;
+        enemiesRemaining = initialTarget;
+        
+        targetCountEl.innerText = enemiesRemaining;
+        timeLeft = 30;
+        levelEl.innerText = currentLevel;
+        timerEl.innerText = timeLeft;
+        
+        gameRunning = true;
+        draw();
+    }, 2000);
+}
+
+function saveScore(name, score) {
+    if (!name) name = "Unknown";
+    let scores = JSON.parse(localStorage.getItem('dungeon_scores')) || [];
+    scores.push({ name: name, score: score });
+    scores.sort((a, b) => b.score - a.score);
+    scores = scores.slice(0, 10);
+    localStorage.setItem('dungeon_scores', JSON.stringify(scores));
+}
+
+function displayLeaderboard(highScore) {
+    let scores = JSON.parse(localStorage.getItem('dungeon_scores')) || [];
+    leaderboardContent.innerHTML = "";
+    scores.forEach((entry, index) => {
+        const row = document.createElement('div');
+        row.className = "lb-row" + (entry.name === currentName && entry.score === highScore ? " active" : "");
+        row.innerHTML = `<span>#${index+1} ${entry.name}</span><span>${entry.score}</span>`;
+        leaderboardContent.appendChild(row);
+    });
+    leaderboardBox.style.display = "block";
+}
+
+function startGame() {
+    initAudio();
+    currentName = nameInput.value.trim() || "Player";
+    gameRunning = true;
+    currentLevel = 1;
+    totalScore = 0;
+    initialTarget = 15;
+    enemiesRemaining = 15;
+    timeLeft = 30;
+    alice.level = 1;
+    enemies = [];
+    particles = [];
+    
+    levelEl.innerText = currentLevel;
+    targetCountEl.innerText = enemiesRemaining;
+    timerEl.innerText = timeLeft;
+    leaderboardBox.style.display = "none";
+    overlay.style.display = 'none';
+    lastTime = Date.now();
+    
+    draw();
+}
+
+function gameOver() {
+    gameRunning = false; 
+    saveScore(currentName, totalScore); 
+    displayLeaderboard(totalScore);
+    overlay.style.display = 'flex';
+    overlay.querySelector('h1').innerText = "FAILED";
+    overlay.querySelector('p').innerHTML = `儀式失敗<br>總擊殺: ${totalScore}`;
+    overlay.querySelector('#btn-start').innerText = "再試一次";
+}
+
+function gameWin() {
+    gameRunning = false; 
+    saveScore(currentName, totalScore); 
+    displayLeaderboard(totalScore);
+    overlay.style.display = 'flex';
+    overlay.querySelector('h1').innerText = "TRUTH REVEALED";
+    overlay.querySelector('p').innerHTML = `看到了艾莉絲<br>總擊殺: ${totalScore}`;
+    overlay.querySelector('#btn-start').innerText = "再玩一次";
+}
+
+// 初始畫一次背景
+resizeCanvas();
+drawAlice(1);
+
+</script>
+</body>
+</html>
